@@ -54,7 +54,8 @@ const ENDPOINT: &str = "https://api.airtable.com/v0/";
 pub struct Airtable {
     key: String,
     base_id: String,
-    enterprise_account_id: String,
+    enterprise_account_id: Option<String>,
+    return_fields_as_ids: bool,
 
     pub(crate) client: reqwest_middleware::ClientWithMiddleware,
 }
@@ -70,7 +71,7 @@ impl Airtable {
     /// given a valid API Key and Base ID your requests will work.
     /// You can leave the Enterprise Account ID empty if you are not using the
     /// Enterprise API features.
-    pub fn new<K, B, E>(key: K, base_id: B, enterprise_account_id: E) -> Self
+    pub fn new<K, B, E>(key: K, base_id: B, enterprise_account_id: Option<E>, return_fields_as_ids: bool) -> Self
     where
         K: ToString,
         B: ToString,
@@ -90,8 +91,8 @@ impl Airtable {
                 Self {
                     key: key.to_string(),
                     base_id: base_id.to_string(),
-                    enterprise_account_id: enterprise_account_id.to_string(),
-
+                    enterprise_account_id,
+                    return_fields_as_ids,
                     client,
                 }
             }
@@ -103,11 +104,15 @@ impl Airtable {
     /// takes a type that can convert into
     /// an &str (`String` or `Vec<u8>` for example). As long as the function is
     /// given a valid API Key and Base ID your requests will work.
-    pub fn new_from_env() -> Self {
+    pub fn new_from_env(return_fields_as_ids: bool) -> Self {
         let base_id = env::var("AIRTABLE_BASE_ID").unwrap_or_default();
-        let enterprise_account_id = env::var("AIRTABLE_ENTERPRISE_ACCOUNT_ID").unwrap_or_default();
+        let res = env::var("AIRTABLE_ENTERPRISE_ACCOUNT_ID");
+        let enterprise_account_id = match res {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        };
 
-        Airtable::new(api_key_from_env(), base_id, enterprise_account_id)
+        Airtable::new(api_key_from_env(), base_id, enterprise_account_id, return_fields_as_ids)
     }
 
     /// Get the currently set API key.
@@ -142,8 +147,15 @@ impl Airtable {
         let mut rb = self.client.request(method.clone(), url).headers(headers);
 
         match query {
-            None => (),
-            Some(val) => {
+            None => {
+                if self.return_fields_as_ids {
+                    rb = rb.query(&[("returnFieldsByField", "true")]);
+                }
+            },
+            Some(mut val) => {
+                if self.return_fields_as_ids {
+                    val.push(("returnFieldsByField", "true".to_string()));
+                }
                 rb = rb.query(&val);
             }
         }
@@ -413,7 +425,7 @@ impl Airtable {
         match resp.json::<APICall<T>>().await {
             Ok(v) => Ok(v.records),
             Err(_) => {
-                // This might fail. On a faiture just return an empty vector.
+                // This might fail. On a failure just return an empty vector.
                 Ok(vec![])
             }
         }
@@ -423,7 +435,7 @@ impl Airtable {
     /// This is for an enterprise admin to do only.
     /// FROM: https://airtable.com/api/enterprise
     pub async fn list_users(&self) -> Result<Vec<User>> {
-        if self.enterprise_account_id.is_empty() {
+        if self.enterprise_account_id.is_none() {
             // Return an error early.
             bail!("An enterprise account id is required.");
         }
@@ -431,7 +443,7 @@ impl Airtable {
         // Build the request.
         let request = self.request(
             Method::GET,
-            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id),
+            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id.unwrap()),
             (),
             Some(vec![("state", "provisioned".to_string())]),
         )?;
@@ -455,7 +467,7 @@ impl Airtable {
     /// FROM: https://airtable.com/api/enterprise#enterpriseAccountUserGetInformationByEmail
     /// Permission level can be: owner | create | edit | comment | read
     pub async fn get_enterprise_user(&self, email: &str) -> Result<EnterpriseUser> {
-        if self.enterprise_account_id.is_empty() {
+        if self.enterprise_account_id.is_none() {
             // Return an error early.
             bail!("An enterprise account id is required.");
         }
@@ -463,7 +475,7 @@ impl Airtable {
         // Build the request.
         let request = self.request(
             Method::GET,
-            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id),
+            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id.unwrap()),
             (),
             Some(vec![
                 ("email", email.to_string()),
@@ -583,7 +595,7 @@ impl Airtable {
     /// The user must be an internal user, meaning they have an email with the company domain.
     /// FROM: https://airtable.com/api/enterprise#enterpriseAccountUserDeleteUserByEmail
     pub async fn delete_internal_user_by_email(&self, email: &str) -> Result<()> {
-        if self.enterprise_account_id.is_empty() {
+        if self.enterprise_account_id.is_none() {
             // Return an error early.
             bail!("An enterprise account id is required.");
         }
@@ -591,7 +603,7 @@ impl Airtable {
         // Build the request.
         let request = self.request(
             Method::DELETE,
-            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id),
+            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id.unwrap()),
             (),
             Some(vec![("email", email.to_string())]),
         )?;
@@ -735,7 +747,7 @@ enum UserField {
     Name,
 }
 
-const USERFIELDS: &[&str] = &["id", "email", "name"];
+const USER_FIELDS: &[&str] = &["id", "email", "name"];
 
 impl<'de> Deserialize<'de> for UserField {
     fn deserialize<D>(deserializer: D) -> Result<UserField, D::Error>
@@ -759,7 +771,7 @@ impl<'de> Deserialize<'de> for UserField {
                     "id" => Ok(UserField::Id),
                     "email" => Ok(UserField::Email),
                     "name" => Ok(UserField::Name),
-                    _ => Err(serde::de::Error::unknown_field(value, USERFIELDS)),
+                    _ => Err(serde::de::Error::unknown_field(value, USER_FIELDS)),
                 }
             }
         }
@@ -1208,7 +1220,7 @@ pub mod user_format_as_array_of_strings {
 pub mod user_format_as_string {
     use serde::{self, ser::SerializeStruct, Deserializer, Serializer};
 
-    use super::{UserVisitor, USERFIELDS};
+    use super::{UserVisitor, USER_FIELDS};
 
     // The signature of a serialize_with function must follow the pattern:
     //
@@ -1238,7 +1250,7 @@ pub mod user_format_as_string {
         D: Deserializer<'de>,
     {
         let user = deserializer
-            .deserialize_struct("User", USERFIELDS, UserVisitor)
+            .deserialize_struct("User", USER_FIELDS, UserVisitor)
             .unwrap();
         Ok(user.email)
     }
@@ -1400,7 +1412,7 @@ enum BarcodeField {
     Type,
 }
 
-const BARCODEFIELDS: &[&str] = &["text", "type"];
+const BARCODE_FIELDS: &[&str] = &["text", "type"];
 
 impl<'de> Deserialize<'de> for BarcodeField {
     fn deserialize<D>(deserializer: D) -> Result<BarcodeField, D::Error>
@@ -1423,7 +1435,7 @@ impl<'de> Deserialize<'de> for BarcodeField {
                 match value {
                     "text" => Ok(BarcodeField::Text),
                     "type" => Ok(BarcodeField::Type),
-                    _ => Err(serde::de::Error::unknown_field(value, BARCODEFIELDS)),
+                    _ => Err(serde::de::Error::unknown_field(value, BARCODE_FIELDS)),
                 }
             }
         }
@@ -1435,7 +1447,7 @@ impl<'de> Deserialize<'de> for BarcodeField {
 pub mod barcode_format_as_string {
     use serde::{self, ser::SerializeStruct, Deserializer, Serializer};
 
-    use super::{BarcodeVisitor, BARCODEFIELDS};
+    use super::{BarcodeVisitor, BARCODE_FIELDS};
 
     // The signature of a serialize_with function must follow the pattern:
     //
@@ -1450,7 +1462,7 @@ pub mod barcode_format_as_string {
     {
         let mut state = serializer.serialize_struct("Barcode", 1)?;
         state.serialize_field("text", &text)?;
-        // This needs to be code39 or upce.
+        // This needs to be code39 or up-ce.
         state.serialize_field("type", "code39")?;
         state.end()
     }
@@ -1467,7 +1479,7 @@ pub mod barcode_format_as_string {
         D: Deserializer<'de>,
     {
         let barcode = deserializer
-            .deserialize_struct("Barcode", BARCODEFIELDS, BarcodeVisitor)
+            .deserialize_struct("Barcode", BARCODE_FIELDS, BarcodeVisitor)
             .unwrap();
         Ok(barcode.text)
     }
