@@ -36,6 +36,7 @@
  * ```
  */
 #![allow(clippy::field_reassign_with_default)]
+
 use std::{env, fmt, fmt::Debug, marker::PhantomData};
 
 use anyhow::{bail, Result};
@@ -71,21 +72,28 @@ impl Airtable {
     /// given a valid API Key and Base ID your requests will work.
     /// You can leave the Enterprise Account ID empty if you are not using the
     /// Enterprise API features.
-    pub fn new<K, B, E>(key: K, base_id: B, enterprise_account_id: Option<E>, return_fields_as_ids: bool) -> Self
+    pub fn new<K, B>(
+        key: K,
+        base_id: B,
+        enterprise_account_id: Option<String>,
+        return_fields_as_ids: bool,
+    ) -> Self
     where
         K: ToString,
         B: ToString,
-        E: ToString,
     {
         let http = reqwest::Client::builder().build();
         match http {
             Ok(c) => {
-                let retry_policy = reqwest_retry::policies::ExponentialBackoff::builder().build_with_max_retries(3);
+                let retry_policy = reqwest_retry::policies::ExponentialBackoff::builder()
+                    .build_with_max_retries(3);
                 let client = reqwest_middleware::ClientBuilder::new(c)
                     // Trace HTTP requests. See the tracing crate to make use of these traces.
                     .with(reqwest_tracing::TracingMiddleware::default())
                     // Retry failed requests.
-                    .with(reqwest_retry::RetryTransientMiddleware::new_with_policy(retry_policy))
+                    .with(reqwest_retry::RetryTransientMiddleware::new_with_policy(
+                        retry_policy,
+                    ))
                     .build();
 
                 Self {
@@ -112,7 +120,12 @@ impl Airtable {
             Err(_) => None,
         };
 
-        Airtable::new(api_key_from_env(), base_id, enterprise_account_id, return_fields_as_ids)
+        Airtable::new(
+            api_key_from_env(),
+            base_id,
+            enterprise_account_id,
+            return_fields_as_ids,
+        )
     }
 
     /// Get the currently set API key.
@@ -151,7 +164,7 @@ impl Airtable {
                 if self.return_fields_as_ids {
                     rb = rb.query(&[("returnFieldsByField", "true")]);
                 }
-            },
+            }
             Some(mut val) => {
                 if self.return_fields_as_ids {
                     val.push(("returnFieldsByField", "true".to_string()));
@@ -232,12 +245,21 @@ impl Airtable {
         Ok(records)
     }
 
-    pub fn pages<T: DeserializeOwned>(&self, table: &str, view: &str, fields: Vec<&str>) -> Pages<T> {
+    pub fn pages<T: DeserializeOwned>(
+        &self,
+        table: &str,
+        view: &str,
+        fields: Vec<&str>,
+    ) -> Pages<T> {
         Pages::new(self, table, view, &fields)
     }
 
     /// Get record from a table.
-    pub async fn get_record<T: DeserializeOwned>(&self, table: &str, record_id: &str) -> Result<Record<T>> {
+    pub async fn get_record<T: DeserializeOwned>(
+        &self,
+        table: &str,
+        record_id: &str,
+    ) -> Result<Record<T>> {
         // Build the request.
         let request = self.request(Method::GET, format!("{table}/{record_id}"), (), None)?;
 
@@ -280,7 +302,11 @@ impl Airtable {
     ///
     /// Due to limitations on the Airtable API, you can only bulk delete 10
     /// records at a time.
-    pub async fn delete_records(&self, table: &str, record_ids: impl IntoIterator<Item = &str>) -> Result<()> {
+    pub async fn delete_records(
+        &self,
+        table: &str,
+        record_ids: impl IntoIterator<Item = &str>,
+    ) -> Result<()> {
         // Build the request.
         let request = self.request(
             Method::DELETE,
@@ -362,7 +388,6 @@ impl Airtable {
 
         // Try to deserialize the response.
         let r: APICall<T> = resp.json().await?;
-
         Ok(r.records)
     }
 
@@ -443,7 +468,10 @@ impl Airtable {
         // Build the request.
         let request = self.request(
             Method::GET,
-            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id.unwrap()),
+            format!(
+                "v0/meta/enterpriseAccounts/{}/users",
+                self.enterprise_account_id.clone().unwrap()
+            ),
             (),
             Some(vec![("state", "provisioned".to_string())]),
         )?;
@@ -475,7 +503,10 @@ impl Airtable {
         // Build the request.
         let request = self.request(
             Method::GET,
-            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id.unwrap()),
+            format!(
+                "v0/meta/enterpriseAccounts/{}/users",
+                self.enterprise_account_id.clone().unwrap()
+            ),
             (),
             Some(vec![
                 ("email", email.to_string()),
@@ -511,7 +542,7 @@ impl Airtable {
         user_id: &str,
         permission_level: &str,
     ) -> Result<()> {
-        if self.enterprise_account_id.is_empty() {
+        if self.enterprise_account_id.is_none() {
             // Return an error early.
             bail!("An enterprise account id is required.");
         }
@@ -552,7 +583,7 @@ impl Airtable {
         workspace_id: &str,
         includes: Option<[WorkspaceIncludes; N]>,
     ) -> Result<Workspace> {
-        if self.enterprise_account_id.is_empty() {
+        if self.enterprise_account_id.is_none() {
             // Return an error early.
             bail!("An enterprise account id is required.");
         }
@@ -603,7 +634,10 @@ impl Airtable {
         // Build the request.
         let request = self.request(
             Method::DELETE,
-            format!("v0/meta/enterpriseAccounts/{}/users", self.enterprise_account_id.unwrap()),
+            format!(
+                "v0/meta/enterpriseAccounts/{}/users",
+                self.enterprise_account_id.clone().unwrap()
+            ),
             (),
             Some(vec![("email", email.to_string())]),
         )?;
@@ -656,11 +690,17 @@ where
             return Ok(None);
         }
 
-        let mut params = vec![("pageSize", "100".to_string()), ("view", self.view.to_string())];
+        let mut params = vec![
+            ("pageSize", "100".to_string()),
+            ("view", self.view.to_string()),
+        ];
 
         if let Some(offset) = &self.offset {
             if !offset.is_empty() {
-                log::debug!("[airtable-api] Fetching page of results with offset {}", offset);
+                log::debug!(
+                    "[airtable-api] Fetching page of results with offset {}",
+                    offset
+                );
                 params.push(("offset", offset.clone()));
             }
         } else {
@@ -692,7 +732,9 @@ where
                 Ok(Some(api_response.records))
             }
             s => {
-                log::debug!("[airtable-api] Pagination request returned an error. Stopping requests.");
+                log::debug!(
+                    "[airtable-api] Pagination request returned an error. Stopping requests."
+                );
 
                 // Once we hit an error we stop pagination
                 self.offset = None;
@@ -874,7 +916,11 @@ pub struct UsersResponse {
 /// FROM: https://airtable.com/api/enterprise#enterpriseAccountUserDeleteUserByEmail
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DeleteUserResponse {
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "deletedUsers")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "deletedUsers"
+    )]
     pub deleted_users: Vec<User>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<ErrorResponse>,
@@ -1005,9 +1051,17 @@ pub struct EnterpriseUser {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Collaborations {
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "workspaceCollaborations")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "workspaceCollaborations"
+    )]
     pub workspace_collaborations: Vec<Collaboration>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "baseCollaborations")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "baseCollaborations"
+    )]
     pub base_collaborations: Vec<Collaboration>,
 }
 
