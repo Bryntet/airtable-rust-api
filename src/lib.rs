@@ -162,7 +162,7 @@ impl Airtable {
         match query {
             None => {
                 if self.return_fields_as_ids {
-                    rb = rb.query(&[("returnFieldsByField", "true")]);
+                    rb = rb.query(&[("returnFieldsByField", "true".to_string())]);
                 }
             }
             Some(mut val) => {
